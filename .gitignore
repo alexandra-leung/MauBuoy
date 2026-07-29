@@ -1,6 +1,11 @@
 venv/
 __pycache__/
 *.pyc
+.env
+
+models/
+*.pkl
+
+.vscode/
+
 .DS_Store
-*.env
-data/coral_images/

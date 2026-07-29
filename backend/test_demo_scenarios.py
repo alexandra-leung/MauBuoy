@@ -5,8 +5,8 @@ This verifies the entire pipeline works correctly.
 """
 
 import json
-from backend.demo_scenarios import DEMO_SCENARIOS
-from backend.mock_orchestrator import mock_gemma_orchestrator
+from demo_scenarios import DEMO_SCENARIOS
+from gemma_orchestrator import GEMMA_ORCHESTRATOR
 
 def test_all_scenarios():
     """Run all demo scenarios and verify outputs"""
@@ -26,7 +26,7 @@ def test_all_scenarios():
         print(f"{'='*80}\n")
         
         # Run the scenario through the orchestrator
-        result = mock_gemma_orchestrator(
+        result = GEMMA_ORCHESTRATOR(
             cv_output=scenario['cv_output'],
             sensor_data=scenario['sensor_data'],
             location_name=scenario['location']
