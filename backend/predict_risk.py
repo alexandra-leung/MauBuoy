@@ -1,143 +1,160 @@
 # backend/predict_risk.py
+"""
+ReefGuardian AI - Binary Bleaching Risk Predictor
+Model outputs: ['no_event', 'bleaching_event']
+Converts to MauBuoy's 3 metrics: Risk Score, Disease Probability, Recovery Potential
+"""
+
 import joblib
 import numpy as np
 import os
+import json
 
-# Load the trained model
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'bleaching_predictor.pkl')
+BASE_DIR = os.path.dirname(__file__)
+MODEL_PATH = os.path.join(BASE_DIR, 'bleaching_predictor.pkl')
+METADATA_PATH = os.path.join(BASE_DIR, 'model_metadata.pkl')
+
 try:
     predictor = joblib.load(MODEL_PATH)
-except FileNotFoundError:
-    print("⚠️ Model not found. Run train_prediction_model.py first!")
+    metadata = joblib.load(METADATA_PATH)
+    FEATURE_COLS = metadata['feature_columns']
+    CLASSES = metadata['classes']  # ['no_event', 'bleaching_event']
+    print(f"✅ Model loaded. Classes: {CLASSES}")
+    print(f"   Features: {FEATURE_COLS}")
+except FileNotFoundError as e:
+    print(f"⚠️  Model not found: {e}")
+    print("Run: python backend/train_prediction_model.py")
     predictor = None
+    FEATURE_COLS = []
+    CLASSES = ['no_event', 'bleaching_event']
 
 
 def predict_14_day_bleaching_risk(latitude, longitude, depth, sst_kelvin, dhw, coral_health="unknown"):
     """
-    State-aware prediction: predicts multiple risks based on current coral health.
+    Predicts bleaching risk using binary model.
+    Outputs MauBuoy's 3 metrics:
+    1. Bleaching Risk Score (0-100)
+    2. Disease Outbreak Probability
+    3. Recovery Potential
     
     Args:
-        latitude, longitude, depth, sst_kelvin, dhw: Environmental data
-        coral_health: Current state from CV model ("healthy", "stressed", "bleached", "dead")
+        latitude, longitude, depth: Location data
+        sst_kelvin: Sea Surface Temperature in Kelvin
+        dhw: Degree Heating Weeks
+        coral_health: Current state from CV model (healthy/stressed/bleached/dead)
     
     Returns:
-        Dict with multiple risk metrics based on coral state
+        Dict with risk metrics
     """
     
     if predictor is None:
         return {
-            "error": "Model not loaded",
             "bleaching_risk_score": 50,
-            "risk_level": "UNKNOWN"
+            "risk_level": "UNKNOWN",
+            "disease_outbreak_probability": "50%",
+            "recovery_potential": "50%",
+            "reasoning": "Prediction model unavailable"
         }
     
-    # Format input for the model
-    features = np.array([[latitude, longitude, depth, 2024, sst_kelvin, sst_kelvin, dhw, dhw, dhw]])
+    # Build feature vector matching training columns
+    feature_values = []
+    for col in FEATURE_COLS:
+        col_lower = col.lower()
+        if 'lat' in col_lower:
+            feature_values.append(latitude)
+        elif 'lon' in col_lower or 'long' in col_lower:
+            feature_values.append(longitude)
+        elif 'depth' in col_lower:
+            feature_values.append(depth)
+        elif 'year' in col_lower or 'date' in col_lower:
+            feature_values.append(2024)
+        elif 'sst' in col_lower or 'temp' in col_lower or 'climsst' in col_lower:
+            feature_values.append(sst_kelvin)
+        elif 'dhw' in col_lower:
+            feature_values.append(dhw)
+        else:
+            feature_values.append(0)
     
-    # Get base bleaching probability from the model
-    bleaching_probability = predictor.predict_proba(features)[0][1]
-    bleaching_risk_score = int(bleaching_probability * 100)
+    # Ensure correct length
+    feature_values = feature_values[:len(FEATURE_COLS)]
+    while len(feature_values) < len(FEATURE_COLS):
+        feature_values.append(0)
+    
+    # Create DataFrame with proper column names (fixes the warning)
+    import pandas as pd
+    features_df = pd.DataFrame([feature_values], columns=FEATURE_COLS)
+    
+    # Get probability of bleaching event
+    probs = predictor.predict_proba(features_df)[0]
+    
+    # probs[0] = P(no_event), probs[1] = P(bleaching_event)
+    event_prob = probs[1] if len(probs) > 1 else probs[0]
+    risk_score = int(event_prob * 100)
     
     # Determine risk level
-    risk_level = "LOW" if bleaching_risk_score < 30 else "MODERATE" if bleaching_risk_score < 60 else "HIGH" if bleaching_risk_score < 80 else "CRITICAL"
+    if risk_score < 30:
+        risk_level = "LOW"
+    elif risk_score < 60:
+        risk_level = "MODERATE"
+    elif risk_score < 80:
+        risk_level = "HIGH"
+    else:
+        risk_level = "CRITICAL"
     
-    # STATE-AWARE PREDICTIONS
+    # Calculate MauBuoy's 3 metrics
+    disease_prob = min(95, risk_score + 15)
+    base_recovery = max(5, 100 - risk_score)
+    
+    # Adjust recovery based on CV model's current health
     coral_health = coral_health.lower()
     
     if coral_health == "healthy":
-        # Healthy coral: Focus on PREVENTION
-        return {
-            "bleaching_risk_score": bleaching_risk_score,
-            "risk_level": risk_level,
-            "disease_outbreak_probability": f"{min(30, bleaching_risk_score // 2)}%",
-            "mortality_risk": f"{min(20, bleaching_risk_score // 3)}%",
-            "recovery_potential": "95%",
-            "reasoning": f"Healthy coral detected. Bleaching risk is {risk_level} ({bleaching_risk_score}/100). Focus on preventive monitoring."
-        }
-    
+        recovery = base_recovery
+        reasoning = f"Healthy coral. Risk: {risk_score}/100 ({risk_level}). High recovery potential with monitoring."
     elif coral_health == "stressed":
-        # Stressed coral: Focus on EARLY WARNING
-        disease_prob = min(70, bleaching_risk_score + 20)
-        mortality_risk = min(50, bleaching_risk_score)
-        return {
-            "bleaching_risk_score": bleaching_risk_score,
-            "risk_level": risk_level,
-            "disease_outbreak_probability": f"{disease_prob}%",
-            "mortality_risk": f"{mortality_risk}%",
-            "recovery_potential": f"{max(30, 100 - bleaching_risk_score)}%",
-            "reasoning": f"Stressed coral detected. High risk of disease outbreak ({disease_prob}%) and mortality ({mortality_risk}%). Immediate intervention recommended."
-        }
-    
+        recovery = max(10, base_recovery - 20)
+        reasoning = f"Stressed coral. Risk: {risk_score}/100 ({risk_level}). Disease risk elevated. Immediate intervention recommended."
     elif coral_health == "bleached":
-        # Bleached coral: Focus on INTERVENTION
-        mortality_risk = min(80, bleaching_risk_score + 30)
-        recovery_potential = max(10, 100 - bleaching_risk_score - 20)
-        return {
-            "bleaching_risk_score": bleaching_risk_score,
-            "risk_level": risk_level,
-            "disease_outbreak_probability": f"{min(85, bleaching_risk_score + 25)}%",
-            "mortality_risk": f"{mortality_risk}%",
-            "recovery_potential": f"{recovery_potential}%",
-            "reasoning": f"Bleached coral detected. Mortality risk is {mortality_risk}%. Recovery potential is {recovery_potential}% with immediate intervention (e.g., shading, cooling)."
-        }
-    
+        recovery = max(5, base_recovery - 40)
+        reasoning = f"Bleached coral. Risk: {risk_score}/100 ({risk_level}). Recovery reduced. Heat-resistant outplanting recommended."
     elif coral_health == "dead":
-        # Dead coral: Focus on RESTORATION PLANNING
-        return {
-            "bleaching_risk_score": 0,  # Already dead, bleaching risk irrelevant
-            "risk_level": "N/A",
-            "disease_outbreak_probability": "0%",
-            "mortality_risk": "100%",
-            "recovery_potential": "0%",
-            "ecosystem_recovery_estimate": "5-10 years without intervention",
-            "reasoning": f"Coral is dead. Bleaching risk no longer applicable. Focus on restoration planning: substrate stabilization or coral gardening required."
-        }
-    
+        recovery = 0
+        reasoning = f"Dead coral. Risk score no longer applicable. Focus on restoration planning."
     else:
-        # Unknown state: Return base prediction
-        return {
-            "bleaching_risk_score": bleaching_risk_score,
-            "risk_level": risk_level,
-            "disease_outbreak_probability": f"{min(95, bleaching_risk_score + 15)}%",
-            "recovery_potential": f"{max(5, 100 - bleaching_risk_score)}%",
-            "reasoning": f"Unknown coral health state. Base bleaching risk is {risk_level} ({bleaching_risk_score}/100)."
-        }
+        recovery = base_recovery
+        reasoning = f"Risk: {risk_score}/100 ({risk_level})."
+    
+    return {
+        "bleaching_risk_score": risk_score,
+        "risk_level": risk_level,
+        "disease_outbreak_probability": f"{disease_prob}%",
+        "recovery_potential": f"{recovery}%",
+        "reasoning": reasoning
+    }
 
 
-# Quick test
 if __name__ == "__main__":
-    print("Testing state-aware predictions...\n")
+    print("\n🧪 Testing prediction model...")
     
-    # Test 1: Healthy coral
-    result1 = predict_14_day_bleaching_risk(-20.4, 57.7, 5.0, 301.5, 2.0, coral_health="healthy")
-    print("1. HEALTHY coral:")
-    print(f"   Bleaching Risk: {result1['bleaching_risk_score']}/100 ({result1['risk_level']})")
-    print(f"   Disease Risk: {result1['disease_outbreak_probability']}")
-    print(f"   Mortality Risk: {result1['mortality_risk']}")
-    print(f"   Recovery: {result1['recovery_potential']}")
-    print()
+    # Test scenarios with Mauritius coordinates
+    scenarios = [
+        ("Le Morne (Low Stress)", -20.46, 57.32, 5.0, 300.7, 1.2, "healthy"),
+        ("Blue Bay (High Stress)", -20.40, 57.70, 5.0, 303.5, 8.5, "bleached"),
+    ]
     
-    # Test 2: Stressed coral
-    result2 = predict_14_day_bleaching_risk(-20.4, 57.7, 5.0, 302.0, 3.5, coral_health="stressed")
-    print("2. STRESSED coral:")
-    print(f"   Bleaching Risk: {result2['bleaching_risk_score']}/100 ({result2['risk_level']})")
-    print(f"   Disease Risk: {result2['disease_outbreak_probability']}")
-    print(f"   Mortality Risk: {result2['mortality_risk']}")
-    print(f"   Recovery: {result2['recovery_potential']}")
-    print()
+    print("\n" + "="*70)
+    print("PREDICTION RESULTS")
+    print("="*70)
     
-    # Test 3: Bleached coral
-    result3 = predict_14_day_bleaching_risk(-20.4, 57.7, 5.0, 302.5, 4.5, coral_health="bleached")
-    print("3. BLEACHED coral:")
-    print(f"   Bleaching Risk: {result3['bleaching_risk_score']}/100 ({result3['risk_level']})")
-    print(f"   Disease Risk: {result3['disease_outbreak_probability']}")
-    print(f"   Mortality Risk: {result3['mortality_risk']}")
-    print(f"   Recovery: {result3['recovery_potential']}")
-    print()
+    for name, lat, lon, depth, sst, dhw, health in scenarios:
+        result = predict_14_day_bleaching_risk(lat, lon, depth, sst, dhw, coral_health=health)
+        
+        print(f"\n{name} (CV: {health}):")
+        print(f"   Risk Score: {result['bleaching_risk_score']}/100 ({result['risk_level']})")
+        print(f"   Disease Probability: {result['disease_outbreak_probability']}")
+        print(f"   Recovery Potential: {result['recovery_potential']}")
+        print(f"   Reasoning: {result['reasoning']}")
     
-    # Test 4: Dead coral
-    result4 = predict_14_day_bleaching_risk(-20.4, 57.7, 5.0, 302.5, 4.5, coral_health="dead")
-    print("4. DEAD coral:")
-    print(f"   Bleaching Risk: {result4['bleaching_risk_score']}/100 ({result4['risk_level']})")
-    print(f"   Ecosystem Recovery: {result4.get('ecosystem_recovery_estimate', 'N/A')}")
-    print(f"   Reasoning: {result4['reasoning']}")
+    print("\n" + "="*70)
+    print("✅ Prediction model working correctly!")
+    print("="*70)

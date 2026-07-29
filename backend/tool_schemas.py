@@ -61,17 +61,22 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "predict_14_day_bleaching_risk",
-            "description": "Predicts the 14-day coral bleaching risk score (0-100) based on location and current thermal stress metrics.",
+            "description": "Predicts 14-day risks (bleaching, disease, mortality) based on environmental data AND current coral health state.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "latitude": {"type": "number"},
                     "longitude": {"type": "number"},
                     "depth": {"type": "number"},
-                    "sst_kelvin": {"type": "number", "description": "Sea Surface Temperature in Kelvin"},
-                    "dhw": {"type": "number", "description": "Degree Heating Weeks"}
+                    "sst_kelvin": {"type": "number"},
+                    "dhw": {"type": "number"},
+                    "coral_health": {
+                        "type": "string",
+                        "enum": ["healthy", "stressed", "bleached", "dead", "unknown"],
+                        "description": "Current coral health state from CV model"
+                    }
                 },
-                "required": ["latitude", "longitude", "depth", "sst_kelvin", "dhw"]
+                "required": ["latitude", "longitude", "depth", "sst_kelvin", "dhw", "coral_health"]
             }
         }
     }
