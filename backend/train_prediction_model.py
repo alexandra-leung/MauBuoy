@@ -1,7 +1,7 @@
 # backend/train_prediction_model.py
 """
-ReefGuardian AI - Model Trainer
-Trains Random Forest on the combined (balanced) dataset.
+ReefGuardian AI - Bleaching Risk Model
+Trains Random Forest to predict binary bleaching risk using the dataset's target column.
 """
 
 import pandas as pd
@@ -13,39 +13,66 @@ import joblib
 import os
 
 print("="*70)
-print("🌊 REEFGUARDIAN AI - Model Training")
+print("REEFGUARDIAN AI - 4-Class Model Training")
 print("="*70)
 
 # ============================================================
-# STEP 1: LOAD COMBINED DATASET
+# STEP 1: LOAD DATASET
 # ============================================================
-print("\n📂 STEP 1: Loading combined dataset...")
+print(f"\nSTEP 1: Loading dataset...")
 
-combined_path = 'data/combined_dataset.csv'
-if not os.path.exists(combined_path):
-    print(f"❌ File not found: {combined_path}")
-    print("\nRun these scripts first:")
-    print("  1. python backend/create_synthetic_data.py")
-    print("  2. python backend/combine_datasets.py")
+dataset_path = 'data/synthetic_bleaching_dataset.csv'
+if not os.path.exists(dataset_path):
+    print(f"File not found: {dataset_path}")
     exit(1)
 
-df = pd.read_csv(combined_path)
-print(f"✅ Loaded {len(df)} records")
+df = pd.read_csv(dataset_path)
+print(f"Loaded {len(df)} records")
 
-# Separate features and target
-feature_cols = [col for col in df.columns if col != 'target']
-X = df[feature_cols]
-y = df['target']
+# ============================================================
+# STEP 2: USING BINARY BLEACHING TARGET
+# ============================================================
+print(f"\nSTEP 2: Using binary bleaching target...")
+
+y = df["Bleaching_Label"]
+
+print("Class distribution:")
+print(y.value_counts())
+
+# ============================================================
+# STEP 3: PREPARE FEATURES AND TARGET
+# ============================================================
+print(f"\nSTEP 3: Preparing features...")
+
+# Feature columns
+feature_cols = [
+    "Latitude",
+    "Longitude",
+    "Depth_m",
+    "Year",
+    "Sea_Surface_Temperature_C",
+    "Degree_Heating_Weeks"
+]
+
+X = df[feature_cols].copy()
+
+# Drop any remaining missing values
+mask = X.notna().all(axis=1)
+X = X[mask]
+y = y[mask]
+
+# Drop any remaining missing values
+mask = X.notna().all(axis=1)
+X = X[mask]
+y = y[mask]
 
 print(f"   Features: {feature_cols}")
-print(f"   Target distribution:")
-print(f"      Bleaching (1): {y.sum()} ({y.mean()*100:.1f}%)")
-print(f"      No event (0): {(y==0).sum()} ({(1-y.mean())*100:.1f}%)")
+print(f"   Final dataset: {len(X)} records")
 
 # ============================================================
-# STEP 2: TRAIN/VAL/TEST SPLIT (70/15/15)
+# STEP 4: TRAIN/VAL/TEST SPLIT (70/15/15)
 # ============================================================
-print(f"\n🔀 STEP 2: Splitting data (70/15/15)...")
+print(f"\nSTEP 5: Splitting data (70/15/15)...")
 
 X_train, X_temp, y_train, y_temp = train_test_split(
     X, y, test_size=0.30, random_state=42, stratify=y
@@ -59,23 +86,24 @@ print(f"   Val:   {len(X_val)} ({len(X_val)/len(X)*100:.1f}%)")
 print(f"   Test:  {len(X_test)} ({len(X_test)/len(X)*100:.1f}%)")
 
 # ============================================================
-# STEP 3: TRAIN RANDOM FOREST
+# STEP 6: TRAIN RANDOM FOREST (BINARY BLEACHING RISK)
 # ============================================================
-print(f"\n🧠 STEP 3: Training Random Forest...")
+print(f"\nSTEP 6: Training binary Random Forest for bleaching risk...")
 
 model = RandomForestClassifier(
-    n_estimators=100,
-    max_depth=10,
+    n_estimators=300,
+    max_depth=12,
     min_samples_split=5,
+    class_weight="balanced",
     random_state=42,
     n_jobs=-1
 )
 model.fit(X_train, y_train)
 
 # ============================================================
-# STEP 4: EVALUATE
+# STEP 7: EVALUATE
 # ============================================================
-print(f"\n📊 STEP 4: Evaluation")
+print(f"\nSTEP 7: Evaluation")
 print("="*70)
 
 for name, X_set, y_set in [('Train', X_train, y_train), 
@@ -86,71 +114,64 @@ for name, X_set, y_set in [('Train', X_train, y_train),
     print(f"{name} Accuracy: {acc:.2%}")
 
 print(f"\nTest Set Classification Report:")
-print(classification_report(y_test, model.predict(X_test), 
-                            target_names=['No Event', 'Bleaching Event'],
-                            zero_division=0))
+print(classification_report(
+    y_test,
+    model.predict(X_test),
+    target_names=[
+        "No Bleaching",
+        "Bleaching"
+    ]
+))
 
 # Feature importance
-print("\n🔍 Feature Importance:")
+print("\nFeature Importance:")
 for col, imp in sorted(zip(feature_cols, model.feature_importances_), 
                         key=lambda x: x[1], reverse=True):
-    print(f"   {col:<25} → {imp:.3f}")
+    print(f"   {col:<25} => {imp:.3f}")
 
 # ============================================================
-# STEP 5: SAVE MODEL + METADATA
+# STEP 8: SAVE MODEL + METADATA
 # ============================================================
-print(f"\n💾 STEP 5: Saving...")
+print(f"\nSTEP 8: Saving...")
 
 os.makedirs('backend', exist_ok=True)
 joblib.dump(model, 'backend/bleaching_predictor.pkl')
-print(f"✅ Model saved: backend/bleaching_predictor.pkl")
+print(f"Model saved: backend/bleaching_predictor.pkl")
 
 metadata = {
-    'feature_columns': feature_cols,
-    'classes': ['no_event', 'bleaching_event']
+    "feature_columns": feature_cols,
+    "classes": ["No Bleaching", "Bleaching"]
 }
 joblib.dump(metadata, 'backend/model_metadata.pkl')
-print(f"✅ Metadata saved: backend/model_metadata.pkl")
+print(f"Metadata saved: backend/model_metadata.pkl")
 
 # ============================================================
-# STEP 6: DEMO PREDICTION
+# STEP 9: DEMO PREDICTION (BLEACHING PROBABILITY)
 # ============================================================
-print(f"\n🎯 STEP 6: Demo prediction...")
+print(f"\nSTEP 9: Demo prediction (4-class output)...")
 
 sample_high = pd.DataFrame([{
-    feature_cols[0]: -20.4,   # Blue Bay
-    feature_cols[1]: 57.7,
-    feature_cols[2]: 5.0,
-    feature_cols[3]: 2024,
-    feature_cols[4]: 303.5,   # High SST (30.35°C)
-    feature_cols[5]: 8.5,     # High DHW
+    "Latitude": -20.4,
+    "Longitude": 57.7,
+    "Depth_m": 5.0,
+    "Year": 2024,
+    "Sea_Surface_Temperature_C": 303.2,
+    "Degree_Heating_Weeks": 8.5
 }])
 
-probs_high = model.predict_proba(sample_high)[0]
-event_prob_high = probs_high[1] if len(probs_high) > 1 else probs_high[0]
-risk_score_high = int(event_prob_high * 100)
-
-print(f"\n📍 Blue Bay (SST=303.5K, DHW=8.5):")
-print(f"   Bleaching Risk Score: {risk_score_high}/100")
-print(f"   Disease Probability: {min(95, risk_score_high + 15)}%")
-print(f"   Recovery Potential: {max(5, 100 - risk_score_high)}%")
+prob_high = model.predict_proba(sample_high)[0][1]
+print(f"\nHigh-risk sample bleaching probability: {prob_high:.1%}")
 
 sample_low = pd.DataFrame([{
-    feature_cols[0]: -20.46,  # Le Morne
-    feature_cols[1]: 57.32,
-    feature_cols[2]: 5.0,
-    feature_cols[3]: 2024,
-    feature_cols[4]: 300.7,   # Low SST (27.55°C)
-    feature_cols[5]: 1.2,     # Low DHW
+    "Latitude": -20.46,
+    "Longitude": 57.32,
+    "Depth_m": 18.0,
+    "Year": 2024,
+    "Sea_Surface_Temperature_C": 299.2,
+    "Degree_Heating_Weeks": 0.5
 }])
 
-probs_low = model.predict_proba(sample_low)[0]
-event_prob_low = probs_low[1] if len(probs_low) > 1 else probs_low[0]
-risk_score_low = int(event_prob_low * 100)
+prob_low = model.predict_proba(sample_low)[0][1]
+print(f"Low-risk sample bleaching probability: {prob_low:.1%}")
 
-print(f"\n📍 Le Morne (SST=300.7K, DHW=1.2):")
-print(f"   Bleaching Risk Score: {risk_score_low}/100")
-print(f"   Disease Probability: {min(95, risk_score_low + 15)}%")
-print(f"   Recovery Potential: {max(5, 100 - risk_score_low)}%")
-
-print("\n🎉 Training complete! Run: python backend/predict_risk.py")
+print("\nTraining complete! Run: python backend/predict_risk.py")
